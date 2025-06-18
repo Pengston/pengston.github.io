@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Kei Delivery Winter Edition</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Roboto+Mono&display=swap');
+  body { margin: 0; overflow: hidden; font-family: 'Roboto Mono', monospace; background: #a0c8ff; }
+  #info {
+    position: absolute; top: 10px; left: 10px;
+    background: rgba(255 255 255 / 0.9);
+    padding: 14px 18px;
+    border-radius: 10px;
+    font-size: 18px;
+    user-select: none;
+    width: 260px;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.15);
+    z-index: 10;
+    color: #222;
+  }
+  #info strong {
+    font-size: 22px;
+    display: block;
+    margin-bottom: 8px;
+    color: #0055aa;
+    text-shadow: 0 0 3px #88aaff;
+  }
+  #canvas-container {
+    width: 100vw; height: 100vh;
+    display: block;
+  }
+  #loading-overlay {
+    position: fixed;
+    top:0; left:0; width: 100vw; height: 100vh;
+    background: #004080;
+    color: white;
+    font-family: 'Roboto Mono', monospace;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 28px;
+    user-select: none;
+    z-index: 50;
+  }
+</style>
+</head>
+<body tabindex="0">
+
+<div id="info">
+  <strong>Kei Delivery Winter Edition</strong>
+  <div>Money: ¥<span id="money">0</span></div>
+  <div>Packages Delivered: <span id="delivered">0</span></div>
+  <div>Controls: W/A/S/D or Arrow Keys to move</div>
+</div>
+
+<div id="loading-overlay">Loading...</div>
+<div id="canvas-container"></div>
+
+<script type="module">
+  import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.153.0/build/three.module.js';
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x8abce3);
+
+  const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 1000);
+  camera.position.set(0, 15, 25);
+  camera.lookAt(0, 0, 0);
+
+  const renderer = new THREE.WebGLRenderer({antialias:true});
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = true;
+  document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+  const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+  scene.add(ambientLight);
+
+  const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+  dirLight.position.set(10, 30, 10);
+  dirLight.castShadow = true;
+  dirLight.shadow.mapSize.width = 2048;
+  dirLight.shadow.mapSize.height = 2048;
+  dirLight.shadow.camera.near = 1;
+  dirLight.shadow.camera.far = 100;
+  dirLight.shadow.camera.left = -30;
+  dirLight.shadow.camera.right = 30;
+  dirLight.shadow.camera.top = 30;
+  dirLight.shadow.camera.bottom = -30;
+  scene.add(dirLight);
+
+  const groundGeometry = new THREE.PlaneGeometry(70, 70);
+  const groundMaterial = new THREE.MeshStandardMaterial({color: 0xf0f4f8});
+  const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+  ground.rotation.x = -Math.PI / 2;
+  ground.receiveShadow = true;
+  scene.add(ground);
+
+  // Houses
+  function createHouse(x, z) {
+    const houseGroup = new THREE.Group();
+
+    const wallGeo = new THREE.BoxGeometry(3, 3, 3);
+    const wallMat = new THREE.MeshStandardMaterial({color: 0xa0522d});
+    const walls = new THREE.Mesh(wallGeo, wallMat);
+    walls.position.y = 1.5;
+    walls.castShadow = true;
+    walls.receiveShadow = true;
+    houseGroup.add(walls);
+
+    const roofGeo = new THREE.ConeGeometry(2.5, 2, 4);
+    const roofMat = new THREE.MeshStandardMaterial({color: 0x800000});
+    const roof = new THREE.Mesh(roofGeo, roofMat);
+    roof.position.y = 4;
+    roof.rotation.y = Math.PI / 4;
+    roof.castShadow = true;
+    houseGroup.add(roof);
+
+    houseGroup.position.set(x, 0, z);
+    scene.add(houseGroup);
+  }
+
+  for (let i = -25; i <= 25; i += 10) {
+    createHouse(i, -25);
+    createHouse(i, 25);
+    if (i !== -25 && i !== 25) {
+      createHouse(-25, i);
+      createHouse(25, i);
+    }
+  }
+
+  const deliveryPoints = [
+    new THREE.Vector3(12, 0, 12),
+    new THREE.Vector3(-15, 0, 10),
+    new THREE.Vector3(10, 0, -14),
+    new THREE.Vector3(-10, 0, -15),
+    new THREE.Vector3(0, 0, 18)
+  ];
+
+  deliveryPoints.forEach(pos => {
+    const dpGeom = new THREE.SphereGeometry(0.5, 16, 16);
+    const dpMat = new THREE.MeshStandardMaterial({color: 0x22aa22});
+    const dpMesh = new THREE.Mesh(dpGeom, dpMat);
+    dpMesh.position.copy(pos).setY(0.5);
+    dpMesh.castShadow = true;
+    dpMesh.receiveShadow = true;
+    scene.add(dpMesh);
+  });
+
+  let money = 0;
+  let deliveredCount = 0;
+  let hasPackage = false;
+  let currentTarget = null;
+
+  const moneySpan = document.getElementById('money');
+  const deliveredSpan = document.getElementById('delivered');
+  const loadingOverlay = document.getElementById('loading-overlay');
+
+  function dist2D(a, b) {
+    return Math.hypot(a.x - b.x, a.z - b.z);
+  }
+
+  // Create a simple box truck model instead of loading external GLTF
+  let truck = new THREE.Group();
+
+  const truckBodyGeom = new THREE.BoxGeometry(3, 1, 5);
+  const truckBodyMat = new THREE.MeshStandardMaterial({color: 0x0088cc});
+  const truckBody = new THREE.Mesh(truckBodyGeom, truckBodyMat);
+  truckBody.position.y = 0.75;
+  truckBody.castShadow = true;
+  truckBody.receiveShadow = true;
+  truck.add(truckBody);
+
+  const cabinGeom = new THREE.BoxGeometry(2, 1.5, 2);
+  const cabinMat = new THREE.MeshStandardMaterial({color: 0x005577});
+  const cabin = new THREE.Mesh(cabinGeom, cabinMat);
+  cabin.position.set(0, 1.5, 1);
+  cabin.castShadow = true;
+  cabin.receiveShadow = true;
+  truck.add(cabin);
+
+  truck.position.set(0, 0, 0);
+  scene.add(truck);
+
+  loadingOverlay.style.display = 'none'; // loading done immediately
+
+  // Package
+  const packageGeom = new THREE.BoxGeometry(0.8, 0.8, 0.8);
+  const packageMatPickup = new THREE.MeshStandardMaterial({color: 0x4444ff});
+  const packageMatDelivery = new THREE.MeshStandardMaterial({color: 0xffcc00});
+  let packageMesh = null;
+
+  function spawnPackage() {
+    if (packageMesh) scene.remove(packageMesh);
+    const idx = Math.floor(Math.random() * deliveryPoints.length);
+    currentTarget = deliveryPoints[idx];
+
+    packageMesh = new THREE.Mesh(packageGeom, packageMatPickup);
+    packageMesh.position.copy(currentTarget).setY(0.4);
+    packageMesh.castShadow = true;
+    packageMesh.receiveShadow = true;
+    scene.add(packageMesh);
+  }
+
+  spawnPackage();
+
+  const keys = {};
+  window.addEventListener('keydown', e => { keys[e.key.toLowerCase()] = true; });
+  window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+
+  let truckSpeed = 0;
+  const maxSpeed = 0.12;
+  const acceleration = 0.004;
+  const deceleration = 0.01;
+  const turnSpeed = 0.03;
+
+  const snowCount = 500;
+  const snowGeometry = new THREE.BufferGeometry();
+  const snowPositions = new Float32Array(snowCount * 3);
+
+  for (let i = 0; i < snowCount; i++) {
+    snowPositions[i * 3] = (Math.random() - 0.5) * 70;
+    snowPositions[i * 3 + 1] = Math.random() * 30 + 10;
+    snowPositions[i * 3 + 2] = (Math.random() - 0.5) * 70;
+  }
+
+  snowGeometry.setAttribute('position', new THREE.BufferAttribute(snowPositions, 3));
+  const snowMaterial = new THREE.PointsMaterial({
+    color: 0xffffff,
+    size: 0.15,
+    transparent: true,
+    opacity: 0.9,
+    sizeAttenuation: true,
+  });
+  const snowParticles = new THREE.Points(snowGeometry, snowMaterial);
+  scene.add(snowParticles);
+
+  let audioCtx;
+  function playBeep() {
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(800, audioCtx.currentTime);
+    gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+    osc.start();
+    osc.stop(audioCtx.currentTime + 0.15);
+  }
+
+  function animate() {
+    requestAnimationFrame(animate);
+
+    // Controls: W/S accelerate/brake, A/D turn
+    if (keys['w'] || keys['arrowup']) {
+      truckSpeed += acceleration;
+      if (truckSpeed > maxSpeed) truckSpeed = maxSpeed;
+    } else if (keys['s'] || keys['arrowdown']) {
+      truckSpeed -= deceleration;
+      if (truckSpeed < -maxSpeed / 2) truckSpeed = -maxSpeed / 2;
+    } else {
+      if (truckSpeed > 0) {
+        truckSpeed -= deceleration;
+        if (truckSpeed < 0) truckSpeed = 0;
+      } else if (truckSpeed < 0) {
+        truckSpeed += deceleration;
+        if (truckSpeed > 0) truckSpeed = 0;
+      }
+    }
+
+    if ((keys['a'] || keys['arrowleft']) && truckSpeed !== 0) {
+      truck.rotation.y += (truckSpeed > 0 ? 1 : -1) * turnSpeed;
+    }
+    if ((keys['d'] || keys['arrowright']) && truckSpeed !== 0) {
+      truck.rotation.y -= (truckSpeed > 0 ? 1 : -1) * turnSpeed;
+    }
+
+    truck.position.x += Math.sin(truck.rotation.y) * truckSpeed;
+    truck.position.z += Math.cos(truck.rotation.y) * truckSpeed;
+
+    truck.position.x = THREE.MathUtils.clamp(truck.position.x, -33, 33);
+    truck.position.z = THREE.MathUtils.clamp(truck.position.z, -33, 33);
+
+    const camTarget = new THREE.Vector3();
+    camTarget.copy(truck.position);
+    camera.position.lerp(new THREE.Vector3(
+      truck.position.x - Math.sin(truck.rotation.y) * 12,
+      10,
+      truck.position.z - Math.cos(truck.rotation.y) * 12
+    ), 0.1);
+    camera.lookAt(camTarget);
+
+    const positions = snowGeometry.attributes.position.array;
+    for (let i = 0; i < snowCount; i++) {
+      positions[i * 3 + 1] -= 0.12;
+      if (positions[i * 3 + 1] < 0) {
+        positions[i * 3] = truck.position.x + (Math.random() - 0.5) * 50;
+        positions[i * 3 + 1] = 30 + Math.random() * 10;
+        positions[i * 3 + 2] = truck.position.z + (Math.random() - 0.5) * 50;
+      }
+    }
+    snowGeometry.attributes.position.needsUpdate = true;
+
+    // Package pickup/delivery
+    if (!hasPackage) {
+      if (packageMesh && dist2D(truck.position, packageMesh.position) < 2) {
+        hasPackage = true;
+        scene.remove(packageMesh);
+        packageMesh = null;
+
+        // Choose delivery point different from current pickup
+        let deliveryIdx;
+        do {
+          deliveryIdx = Math.floor(Math.random() * deliveryPoints.length);
+        } while (dist2D(deliveryPoints[deliveryIdx], currentTarget) < 0.1);
+        currentTarget = deliveryPoints[deliveryIdx];
+
+        packageMesh = new THREE.Mesh(packageGeom, packageMatDelivery);
+        packageMesh.position.copy(currentTarget).setY(0.4);
+        packageMesh.castShadow = true;
+        packageMesh.receiveShadow = true;
+        scene.add(packageMesh);
+      }
+    } else {
+      if (dist2D(truck.position, currentTarget) < 2) {
+        hasPackage = false;
+        money += 1000;
+        deliveredCount += 1;
+        moneySpan.textContent = money;
+        deliveredSpan.textContent = deliveredCount;
+        playBeep();
+        spawnPackage();
+      }
+    }
+
+    renderer.render(scene, camera);
+  }
+
+  animate();
+
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth/window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  window.onload = () => {
+    document.body.focus();
+  };
+</script>
+
+</body>
+</html>
